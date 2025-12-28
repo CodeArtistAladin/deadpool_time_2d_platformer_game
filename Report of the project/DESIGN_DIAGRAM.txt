@@ -1,0 +1,1181 @@
+================================================================================
+                    DEADPOOL PLATFORMER GAME
+                       DESIGN DIAGRAM & LOGIC FLOW
+================================================================================
+
+================================================================================
+1. SYSTEM ARCHITECTURE OVERVIEW
+================================================================================
+
+The game is built on a modular architecture with clear separation of concerns:
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          GAME SYSTEM ARCHITECTURE                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+                            ┌──────────────────┐
+                            │   PYGAME ENGINE  │
+                            │ (Window, Graphics)
+                            │ (Input, Timing)  │
+                            └────────┬─────────┘
+                                     │
+                    ┌────────────────┼────────────────┐
+                    │                │                │
+              ┌─────▼────┐     ┌──────▼───┐    ┌────▼──────┐
+              │  RENDERER │     │ COLLISION │    │   AUDIO   │
+              │  SYSTEM   │     │  DETECTOR │    │  MANAGER  │
+              └──────────┘     └───────────┘    └───────────┘
+                    ▲
+                    │
+        ┌───────────┼───────────┐
+        │           │           │
+   ┌────▼──┐  ┌────▼──┐  ┌────▼──┐
+   │PLAYER │  │WORLD  │  │ CAMERA│
+   │ CLASS │  │CLASS  │  │ CLASS │
+   └────┬──┘  └────┬──┘  └────┬──┘
+        │          │          │
+   ┌────▼──────────▼──────────▼─────┐
+   │     GAME LOOP (60 FPS)          │
+   │  1. Input Processing            │
+   │  2. Update Game State           │
+   │  3. Collision Detection         │
+   │  4. Render to Screen            │
+   └─────────────────────────────────┘
+        │
+   ┌────▼──────────────────────┐
+   │   SPRITE GROUPS           │
+   │  - player_group           │
+   │  - blob_group (enemies)   │
+   │  - platform_group         │
+   │  - lava_group             │
+   │  - coin_group             │
+   │  - exit_group             │
+   └───────────────────────────┘
+
+
+================================================================================
+2. CLASS HIERARCHY AND RELATIONSHIPS
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        CLASS DIAGRAM (UML-STYLE)                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+CLASS: Camera
+─────────────
+  Attributes:
+    - x, y: int              (Camera position in world space)
+    - width, height: int     (Viewport size)
+    - world_width, world_height: int
+  
+  Methods:
+    + update(target_x, target_y) → None
+    + apply(x, y) → (screen_x, screen_y)
+    + is_in_view(rect) → bool
+
+  Relationships:
+    → Used by: Main game loop
+    → References: Player position
+
+
+CLASS: Player (pygame.sprite.Sprite)
+────────────────────────────────────
+  Attributes:
+    - rect: Rect             (Position and collision box)
+    - images_right[]: List   (16 walking frames)
+    - images_left[]: List    (16 walking frames flipped)
+    - vel_y: float           (Vertical velocity)
+    - jumped: bool
+    - in_air: bool
+    - direction: int         (1 for right, -1 for left)
+    - counter, index: int    (Animation frame tracking)
+    - health: int
+  
+  Methods:
+    + update(game_over) → game_over
+    + reset(x, y) → None
+    - handle_animation() → None
+    - handle_collision() → None
+
+  Relationships:
+    → Uses: World for collision
+    → Uses: Camera for viewport
+    → Collides with: Enemy, Lava, Coin, Exit, Platform
+    → Interacts with: Player physics
+
+
+CLASS: World
+────────────
+  Attributes:
+    - tile_list: List[(image, rect)]  (All tiles with collision boxes)
+  
+  Methods:
+    + __init__(data: 2D array) → None
+    + draw() → None
+    + draw_with_camera(camera) → None
+
+  Internal Process:
+    Reads 2D array (tile codes 0-8):
+      0 = Empty      | 1 = Dirt   | 2 = Grass
+      3 = Enemy      | 4 = Plat-H | 5 = Plat-V
+      6 = Lava       | 7 = Coin   | 8 = Exit
+    
+    Converts to game objects:
+      Type 1-2 → Static tiles
+      Type 3   → Enemy(x, y) added to blob_group
+      Type 4-5 → Platform() added to platform_group
+      Type 6   → Lava() added to lava_group
+      Type 7   → Coin() added to coin_group
+      Type 8   → Exit() added to exit_group
+
+  Relationships:
+    → Uses: All sprite classes
+    → Uses: Sprite groups for rendering
+
+
+CLASS: Enemy (pygame.sprite.Sprite)
+───────────────────────────────────
+  Attributes:
+    - images[]: List         (36 animation frames)
+    - rect: Rect             (Position)
+    - move_direction: int    (1 or -1)
+    - move_counter: int
+    - animation_index: int
+  
+  Methods:
+    + update() → None
+    - update_position() → None
+    - update_animation() → None
+
+  Behavior:
+    ├─ Movement: Patrol back-and-forth (50 pixels each direction)
+    ├─ Animation: 36-frame loop
+    └─ Collision: Game over if player touches
+
+
+CLASS: Platform (pygame.sprite.Sprite)
+──────────────────────────────────────
+  Attributes:
+    - rect: Rect
+    - move_x, move_y: int   (Direction flags: 0 or 1)
+    - move_direction: int   (1 or -1, current direction)
+    - move_counter: int
+  
+  Methods:
+    + update() → None
+
+  Types:
+    Type 4: Horizontal moving (move_x=1, move_y=0)
+    Type 5: Vertical moving (move_x=0, move_y=1)
+
+
+CLASS: Coin, Lava, Exit (pygame.sprite.Sprite)
+───────────────────────────────────────────────
+  Simple sprite classes with:
+    - image: PNG texture
+    - rect: Position
+    
+  Coin: Collectible (adds 1 to score)
+  Lava: Hazard (game over if touched)
+  Exit: Goal (level complete if reached)
+
+
+================================================================================
+3. GAME STATE MACHINE
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      FINITE STATE MACHINE (FSM)                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+States and Transitions:
+
+  ┌──────────────────┐
+  │   MAIN MENU      │  (main_menu = True)
+  │  (Draw frontpage)│
+  └────────┬─────────┘
+           │
+    [Start button]
+           │
+           ▼
+  ┌──────────────────────┐
+  │   LEVEL LOADING      │  Load level data from pickle
+  │                      │
+  └──────────┬───────────┘
+             │
+             ▼
+  ┌─────────────────────────────┐
+  │   GAMEPLAY STATE            │  (main_menu = False, game_over = 0)
+  │   Level 1 of 10             │
+  │                             │
+  │  ┌─ Update Player          │
+  │  ├─ Update Enemies         │
+  │  ├─ Update Platforms       │
+  │  ├─ Collision Detection    │
+  │  └─ Render everything      │
+  └────┬────────────────┬──────┘
+       │                │
+  [Enemy touch]    [Exit touch]
+       │                │
+       ▼                ▼
+  ┌─────────────┐  ┌───────────────────┐
+  │ GAME OVER   │  │ LEVEL COMPLETE    │
+  │ (game_over  │  │ (game_over = 1)   │
+  │  = -1)      │  │                   │
+  │             │  │ Load next level   │
+  └────┬────────┘  │ (if not level 10) │
+       │           └────────┬──────────┘
+  [Restart]                 │
+       │              [Level 10 complete]
+       │                   │
+       │                   ▼
+       │          ┌─────────────────┐
+       │          │  VICTORY SCREEN │
+       │          │ (Level 10 Exit) │
+       │          │                 │
+       └──────┐   └────────┬────────┘
+              │            │
+              │     [Restart]
+              │            │
+              └────┬───────┘
+                   │
+                   ▼
+           ┌───────────────┐
+           │ MAIN MENU     │
+           └───────────────┘
+
+
+Variable Usage:
+  - main_menu (bool): True = Menu, False = Playing/Gameplay
+  - game_over (int):  0 = Playing, -1 = Dead, 1 = Level Complete
+  - level (int): Current level 1-10
+
+
+================================================================================
+4. COLLISION DETECTION LOGIC FLOW
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│              COLLISION DETECTION ALGORITHM & FLOW                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+MAIN COLLISION CHECK (Each Frame):
+
+  ┌─────────────────────────────────────────┐
+  │ Player.update() COLLISION DETECTION     │
+  └──────────────┬──────────────────────────┘
+                 │
+    ┌────────────┴────────────┬──────────────┬──────────────┬──────────────┐
+    │                         │              │              │              │
+    ▼                         ▼              ▼              ▼              ▼
+┌────────────────┐  ┌──────────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+│ TILE COLLISION │  │PLATFORM      │  │ ENEMY    │  │ LAVA     │  │ COIN     │
+│ (Dirt, Grass)  │  │ COLLISION    │  │COLLISION │  │COLLISION │  │COLLISION │
+└────────┬───────┘  └──────┬───────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘
+         │                  │               │            │             │
+         │              ┌───▼────┐          │            │             │
+         │              │ Check  │          │            │             │
+         │              │ X axis │          │            │             │
+         │              │ 1st    │          │            │             │
+         │              └────┬───┘          │            │             │
+         │                   │              │            │             │
+         │              ┌────▼────┐         │            │             │
+         │              │ If hit  │         │            │             │
+         │              │ dx = 0  │         │            │             │
+         │              └────┬────┘         │            │             │
+         │                   │              │            │             │
+         │              ┌────▼────┐         │            │             │
+         │              │ Check   │         │            │             │
+         │              │ Y axis  │         │            │             │
+         │              └────┬────┘         │            │             │
+         │                   │              │            │             │
+         │            ┌──────┴──────┐       │            │             │
+         │            │             │       │            │             │
+         │      ┌─────▼──┐   ┌──────▼──┐   │            │             │
+         │      │vel_y<0 │   │vel_y>=0 │   │            │             │
+         │      │Jumping │   │Falling  │   │            │             │
+         │      │UP       │   │DOWN     │   │            │             │
+         │      └────┬────┘   └────┬────┘   │            │             │
+         │           │             │        │            │             │
+         │      [dy change] [dy change]     │            │             │
+         │      [vel_y = 0] [vel_y = 0]     │            │             │
+         │      [in_air=false]               │            │             │
+         │                                   │            │             │
+         └───────────────┬───────────────────┘            │             │
+                         │                                │             │
+         Update Position │                                │             │
+         rect.x += dx    │                                │             │
+         rect.y += dy    │                                │             │
+                         │                                │             │
+                    ┌────┴────────────────────────────────┴─────────────┴┐
+                    │                                                     │
+                    ▼                                                     ▼
+              Apply Movement              [sprite.collide()] → [game_over = -1]
+              to Screen                   [coin.remove()]   → [score += 1]
+                                          [exit.collide()]  → [game_over = 1]
+
+
+DETAILED TILE COLLISION FLOW:
+
+  For each tile in world.tile_list:
+    │
+    ├─ Check X-direction collision:
+    │   if tile_rect.colliderect(player_rect.x + dx, player_rect.y, width, height):
+    │       dx = 0  ← Stop horizontal movement
+    │
+    ├─ Check Y-direction collision:
+    │   if tile_rect.colliderect(player_rect.x, player_rect.y + dy, width, height):
+    │       │
+    │       ├─ If vel_y < 0 (jumping up):
+    │       │   dy = tile_rect.bottom - player_rect.top
+    │       │   vel_y = 0
+    │       │   (Player stops at tile bottom)
+    │       │
+    │       └─ Else if vel_y >= 0 (falling):
+    │           dy = tile_rect.top - player_rect.bottom
+    │           vel_y = 0
+    │           in_air = False  ← Can now jump again
+    │           (Player stops at tile top)
+
+
+PLATFORM COLLISION (Moving Platforms):
+
+  If platform.rect.colliderect(player_rect):
+    │
+    ├─ X-direction: Player can't move through platform
+    │   dx = 0
+    │
+    └─ Y-direction: Check which side collision is:
+        │
+        ├─ If player approaching from below (under platform):
+        │   player_rect.top = platform_rect.bottom
+        │   Move player WITH platform: rect.x += platform.move_direction
+        │
+        └─ If player approaching from above (on platform):
+            player_rect.bottom = platform_rect.top
+            in_air = False  ← Can jump
+
+
+ENEMY COLLISION:
+
+  If pygame.sprite.spritecollide(player, blob_group, False):
+      game_over = -1  ← Death state
+      game_over_fx.play()  ← Sound effect
+
+
+LAVA COLLISION:
+
+  If pygame.sprite.spritecollide(player, lava_group, False):
+      game_over = -1  ← Same as enemy
+
+
+COIN COLLISION:
+
+  If pygame.sprite.spritecollide(player, coin_group, True):
+      score += 1
+      coin_fx.play()  ← Collect sound
+      (True parameter removes coin from group)
+
+
+EXIT COLLISION:
+
+  If pygame.sprite.spritecollide(player, exit_group, False):
+      game_over = 1  ← Level complete state
+
+
+================================================================================
+5. PHYSICS SIMULATION FLOW
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      PHYSICS SYSTEM LOGIC FLOW                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+GRAVITY & VELOCITY SYSTEM (Each Frame):
+
+  ┌───────────────────────────────────┐
+  │ Gravity & Velocity Update         │
+  └────────────┬──────────────────────┘
+               │
+     ┌─────────▼──────────┐
+     │ vel_y += gravity   │  (gravity = 1 pixel/frame²)
+     │ (Acceleration)     │
+     └─────────┬──────────┘
+               │
+     ┌─────────▼───────────────────┐
+     │ if vel_y > max_fall_speed:  │
+     │     vel_y = 10 (cap)        │
+     └─────────┬───────────────────┘
+               │
+     ┌─────────▼────────────────┐
+     │ dy += vel_y              │
+     │ (Add to movement)        │
+     └─────────┬────────────────┘
+               │
+               ▼
+     Apply to Position
+
+
+JUMPING MECHANISM:
+
+  ┌──────────────────────────────────┐
+  │ Check UP key pressed?            │
+  └────────┬─────────────────────────┘
+           │
+    ┌──────▼──────┐
+    │ AND         │
+    │ jumped==False? (not already jumping)
+    │ AND         │
+    │ in_air==False? (on ground)
+    └──────┬──────┘
+           │
+      ┌────▼──────┐
+      │   ALL     │  ──────→ vel_y = -15  (Jump velocity)
+      │   TRUE    │          jumped = True (Lock jump)
+      └───────────┘
+
+  When UP key released:
+      jumped = False  (Unlock jump for next press)
+
+  Result: Player rises, gravity pulls down, lands when hitting ground
+
+
+MOVEMENT SPEED:
+
+  Key pressed (LEFT or RIGHT):
+      dx += 5  (or -5 for left)
+      (5 pixels per frame = 300 pixels/sec at 60 FPS)
+
+  Multiple frames of dx accumulate, creating continuous motion
+
+
+VELOCITY CAP:
+
+  Without cap: Player could fall infinitely fast
+  With cap:    Player falls at max 10 pixels/frame
+               At 60 FPS = 600 pixels/sec = comfortable landing
+               
+  Purpose: Prevent clipping through platforms at high speeds
+
+
+================================================================================
+6. ANIMATION SYSTEM FLOW
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    SPRITE ANIMATION LOGIC FLOW                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+PLAYER ANIMATION STATE MACHINE:
+
+  Frame 0 (Idle): Standing still
+      player.image = images_right[0] or images_left[0]
+      (No animation counter increment)
+
+  Frames 1-16 (Walking): Moving left/right
+      animation_counter += 1
+      if animation_counter > cooldown (5):
+          animation_counter = 0
+          frame_index += 1
+          if frame_index >= 16:
+              frame_index = 0  (Loop back)
+
+
+ANIMATION UPDATE LOGIC:
+
+  ┌─────────────────────────────┐
+  │ Player moving (UP/DOWN key)?│
+  └────────┬────────────────────┘
+           │
+      ┌────▼────┐
+      │   YES   │ ──→ counter += 1
+      └────┬────┘
+           │
+      ┌────▼────────────────────┐
+      │ counter > cooldown (5)? │
+      └────┬────────────────────┘
+           │
+      ┌────▼────┐
+      │   YES   │ ──→ counter = 0
+      └────┬────┘      frame_index += 1
+           │           if frame_index >= 16:
+           │               frame_index = 0 (loop)
+           │           
+           │       Update displayed frame:
+           │       if direction == 1:
+           │           image = images_right[frame_index]
+           │       else:
+           │           image = images_left[frame_index]
+           │
+      ┌────▼────┐
+      │   NO    │ ──→ counter = 0
+      └────┬────┘    (Reset when not moving)
+           │         frame_index = 0
+           │         Show idle frame
+
+  Result: Smooth walking animation at 12 fps (60 fps / 5 cooldown)
+
+
+ENEMY ANIMATION (36 FRAMES):
+
+  animation_index += 1
+  
+  if animation_index >= len(images) * cooldown:
+      animation_index = 0  (Loop)
+  
+  display_frame = images[animation_index // cooldown]
+  
+  Result: Smooth alien walking at 12 fps
+
+
+DIRECTION HANDLING:
+
+  Input: key[LEFT] pressed
+      direction = -1
+      Load images_left[] (flipped)
+  
+  Input: key[RIGHT] pressed
+      direction = 1
+      Load images_right[] (normal)
+  
+  Result: Character faces direction of movement
+          No duplicate sprite sheets needed
+
+
+================================================================================
+7. CAMERA SYSTEM FLOW
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    CAMERA VIEWPORT LOGIC FLOW                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+CAMERA UPDATE (Every Frame):
+
+  ┌──────────────────────────────────┐
+  │ camera.update(player.x, player.y)│
+  └────────┬─────────────────────────┘
+           │
+     ┌─────▼──────────────────────┐
+     │ Center on player           │
+     │ camera_x = player_x - w/2  │
+     │ camera_y = player_y - h/2  │
+     └─────┬──────────────────────┘
+           │
+     ┌─────▼────────────────────┐
+     │ Clamp to world bounds    │
+     │ (prevent showing off-world)
+     └─────┬────────────────────┘
+           │
+     ┌─────▼─────────────┐
+     │ if camera_x < 0:  │
+     │     camera_x = 0  │
+     └─────┬─────────────┘
+           │
+     ┌─────▼──────────────────────────┐
+     │ if camera_x + width > world_w: │
+     │     camera_x = world_w - width │
+     └─────┬──────────────────────────┘
+           │
+           (Same for Y axis)
+           │
+           ▼
+     ┌───────────────────┐
+     │ Camera positioned │
+     └───────────────────┘
+
+
+COORDINATE CONVERSION:
+
+  Input: World coordinates (world_x, world_y)
+  
+  screen_x = world_x - camera_x
+  screen_y = world_y - camera_y
+  
+  Output: Screen coordinates for rendering
+  
+  Example:
+    Player at world (500, 300)
+    Camera at (100, 50)
+    Screen position = (500-100, 300-50) = (400, 250)
+    Player drawn at screen position (400, 250)
+
+
+VIEWPORT CULLING (Optimization):
+
+  ┌────────────────────────────────────┐
+  │ For each game object               │
+  └────────┬───────────────────────────┘
+           │
+     ┌─────▼──────────────────────┐
+     │ is_in_view(object.rect)?   │
+     └─────┬───────┬──────────────┘
+           │       │
+      ┌────▼──┐  ┌─▼────┐
+      │ YES   │  │ NO   │
+      └────┬──┘  └──┬───┘
+           │       │
+      DRAW IT  SKIP IT
+           │       │
+           └───────┘
+           
+  is_in_view() checks:
+    ✓ rect.right >= camera_x (not too far left)
+    ✓ rect.left <= camera_x + width (not too far right)
+    ✓ rect.bottom >= camera_y (not too far up)
+    ✓ rect.top <= camera_y + height (not too far down)
+
+
+RESULT OF CAMERA SYSTEM:
+
+  ✓ Player always centered on screen
+  ✓ Only visible objects drawn (performance)
+  ✓ Smooth scrolling effect
+  ✓ Professional game feel
+
+
+================================================================================
+8. MAIN GAME LOOP
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    60 FPS GAME LOOP STRUCTURE                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+INFINITE GAME LOOP:
+
+  while run:
+      │
+      ├─ clock.tick(60)  ← Lock to 60 FPS
+      │
+      ├─ if main_menu == True:
+      │   │
+      │   ├─ Draw menu screen
+      │   ├─ Check button clicks
+      │   └─ Handle menu input
+      │
+      └─ else:
+          │
+          ├─ if game_over == 0 (playing):
+          │   │
+          │   ├─ Update player position & animation
+          │   │   player.update(game_over)
+          │   │
+          │   ├─ Update enemies
+          │   │   blob_group.update()
+          │   │
+          │   ├─ Update platforms
+          │   │   platform_group.update()
+          │   │
+          │   ├─ Check coin collection
+          │   │   if pygame.sprite.spritecollide(player, coin_group, True):
+          │   │       score += 1
+          │   │
+          │   └─ Update camera
+          │       camera.update(player.x, player.y)
+          │
+          ├─ if game_over == -1 (death):
+          │   │
+          │   ├─ Draw game over screen
+          │   └─ Check restart button
+          │
+          ├─ if game_over == 1 (level complete):
+          │   │
+          │   ├─ if level == 10:
+          │   │   Draw victory screen
+          │   │
+          │   └─ else:
+          │       Load next level
+          │       level += 1
+          │
+          ├─ Draw world (with camera offset)
+          │   for each tile:
+          │       if camera.is_in_view(tile):
+          │           draw tile
+          │
+          ├─ Draw all sprites (with camera offset)
+          │   for each sprite in groups:
+          │       screen_pos = camera.apply(world_pos)
+          │       draw sprite at screen_pos
+          │
+          ├─ Draw UI
+          │   score, level number
+          │
+          └─ Handle input events
+              ├─ Check arrow keys (movement, jump)
+              ├─ Check window resize
+              ├─ Check cheat codes
+              └─ Check window close
+      
+      └─ pygame.display.update()
+
+
+EXECUTION TIME PER FRAME:
+
+  At 60 FPS, each frame must complete in ~16.67 ms:
+  
+  ├─ Input processing:     1-2 ms
+  ├─ Update logic:         3-4 ms
+  ├─ Collision detection:  2-3 ms
+  ├─ Rendering:           8-10 ms
+  └─ Display update:       1-2 ms
+  
+  Total: ~16.67 ms
+  
+  If slower: Frame rate drops below 60 FPS
+  If faster: clock.tick(60) waits for next frame
+
+
+================================================================================
+9. LEVEL LOADING FLOW
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    LEVEL LOADING SEQUENCE                                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+STARTUP SEQUENCE:
+
+  1. scan directory for level files
+     ├─ check level1_data, level2_data, ..., level100_data
+     └─ find max_level
+
+  2. load level data
+     ├─ open('levelN_data', 'rb')
+     ├─ pickle.load(file)
+     └─ get 2D array of tile codes
+
+  3. create world
+     ├─ World(level_data)
+     ├─ converts tile codes to game objects
+     └─ populates sprite groups
+
+  4. initialize camera
+     ├─ camera_width = screen_width
+     ├─ camera_height = screen_height
+     ├─ world_width = len(data[0]) * 50
+     └─ world_height = len(data) * 50
+
+  5. reset player
+     ├─ player.reset(100, ground_y)
+     ├─ loads animation frames
+     └─ ready to play
+
+
+LEVEL TRANSITION:
+
+  Level Complete (game_over == 1):
+      │
+      ├─ if level == 10:
+      │   └─ Show victory screen, wait for restart
+      │
+      └─ else:
+          ├─ level += 1
+          ├─ reset_level(level)
+          │   ├─ Load level data from file
+          │   ├─ Create new World
+          │   ├─ Clear all sprite groups
+          │   └─ Reset player position
+          │
+          └─ Game continues in next level
+
+
+LEVEL DATA FORMAT:
+
+  levelN_data file (binary pickle):
+      2D array, 20×20 integers
+      
+      Each integer (0-8) represents:
+        0 = Empty
+        1 = Dirt block
+        2 = Grass block
+        3 = Enemy
+        4 = Horizontal moving platform
+        5 = Vertical moving platform
+        6 = Lava
+        7 = Coin
+        8 = Exit
+
+
+================================================================================
+10. INPUT HANDLING & CONTROL FLOW
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    INPUT PROCESSING FLOW                                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+KEYBOARD INPUT (Each Frame):
+
+  key = pygame.key.get_pressed()
+  
+  if key[pygame.K_UP]:
+      │
+      ├─ if not jumped and not in_air:
+      │   ├─ vel_y = -15  (Jump)
+      │   ├─ jumped = True  (Prevent double jump)
+      │   └─ jump_fx.play()  (Jump sound)
+      │
+      └─ (else: Already jumping, ignore)
+  
+  if key[pygame.K_LEFT]:
+      ├─ dx -= 5  (Move left)
+      ├─ direction = -1
+      └─ counter += 1  (Play animation)
+  
+  if key[pygame.K_RIGHT]:
+      ├─ dx += 5  (Move right)
+      ├─ direction = 1
+      └─ counter += 1  (Play animation)
+  
+  if not key[pygame.K_LEFT] and not key[pygame.K_RIGHT]:
+      ├─ counter = 0  (Reset animation)
+      └─ frame_index = 0  (Show idle)
+
+
+EVENT INPUT (Each Frame):
+
+  for event in pygame.event.get():
+      │
+      ├─ if event.type == pygame.QUIT:
+      │   └─ run = False
+      │
+      ├─ if event.type == pygame.VIDEORESIZE:
+      │   ├─ screen_width = event.w
+      │   ├─ screen_height = event.h
+      │   └─ camera.width, camera.height = new size
+      │
+      └─ if event.type == pygame.KEYDOWN:
+          │
+          ├─ if cheat code detected:
+          │   └─ Jump to level
+          │
+          └─ (other key events)
+
+
+BUTTON CLICK INPUT:
+
+  start_button.draw():
+      ├─ Get mouse position
+      ├─ Check if mouse over button rect
+      ├─ Check if mouse button clicked
+      └─ Return True if clicked
+  
+  if True:
+      └─ main_menu = False  (Start game)
+
+
+================================================================================
+11. ERROR HANDLING & GRACEFUL DEGRADATION
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    ERROR HANDLING FLOW                                      │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+MISSING LEVEL FILE:
+
+  if not path.exists(f'level{level}_data'):
+      │
+      ├─ world_data = []  (Empty level)
+      │
+      └─ Game continues (doesn't crash)
+
+
+MISSING IMAGE FILE:
+
+  try:
+      img = pygame.image.load('img/player.png')
+  except FileNotFoundError:
+      │
+      ├─ print("ERROR: Could not load image")
+      │
+      └─ Continue game (may have visual glitches)
+
+
+MISSING BACKGROUND FILE:
+
+  if not path.exists(bg_folder):
+      │
+      ├─ available_backgrounds = []
+      │
+      └─ Use fallback background image
+
+
+MUSIC/SOUND ISSUES:
+
+  try:
+      pygame.mixer.music.load('music.wav')
+  except:
+      │
+      └─ Continue game (silently)
+
+
+================================================================================
+12. LEVEL EDITOR ARCHITECTURE
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    LEVEL EDITOR SYSTEM FLOW                                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+EDITOR STATES:
+
+  ┌───────────────┐
+  │ NORMAL EDITING│ (main state)
+  │               │
+  │ - Left click  │
+  │ - Right click │
+  │ - Drag painting
+  │ - Preview mode
+  └────┬──────────┘
+       │
+    [Ctrl+S]
+       │
+       ▼
+  ┌───────────────┐
+  │ SAVE DIALOG   │
+  │               │
+  │ Input filename
+  │ Press ENTER
+  └────┬──────────┘
+       │
+    [File saved]
+       │
+       ▼
+  BACK TO EDITING
+
+
+TILE EDITING LOGIC:
+
+  Mouse click on grid:
+      │
+      ├─ Calculate grid position:
+      │   x = mouse_x // tile_size
+      │   y = mouse_y // tile_size
+      │
+      ├─ Left click: Increment tile type
+      │   world_data[y][x] = (world_data[y][x] + 1) % 9
+      │
+      ├─ Right click: Decrement tile type
+      │   world_data[y][x] = (world_data[y][x] - 1) % 9
+      │
+      └─ Either case: Save state for undo
+          undo_stack.append(copy.deepcopy(world_data))
+
+
+PREVIEW MODE LOGIC:
+
+  Press P:
+      │
+      ├─ preview_mode = True
+      │
+      ├─ For each tile in world_data:
+      │   ├─ if tile == 3: Create PreviewEnemy
+      │   ├─ if tile == 4: Create PreviewPlatform (horizontal)
+      │   ├─ if tile == 5: Create PreviewPlatform (vertical)
+      │   ├─ if tile == 6: Create PreviewLava
+      │   ├─ if tile == 7: Create PreviewCoin
+      │   └─ if tile == 8: Create PreviewExit
+      │
+      ├─ Each frame:
+      │   ├─ Update all preview elements
+      │   ├─ Update preview player (use arrow keys)
+      │   ├─ Check collisions with preview objects
+      │   └─ Draw everything
+      │
+      └─ Press P again: preview_mode = False
+          ├─ Reset all preview elements
+          └─ Back to editing
+
+
+UNDO/REDO FLOW:
+
+  Every edit:
+      undo_stack.append(copy.deepcopy(world_data))
+      redo_stack.clear()
+  
+  Ctrl+Z (Undo):
+      │
+      ├─ redo_stack.append(copy.deepcopy(world_data))
+      ├─ undo_stack.pop()
+      └─ world_data = copy.deepcopy(undo_stack[-1])
+  
+  Ctrl+Y (Redo):
+      │
+      ├─ undo_stack.append(copy.deepcopy(world_data))
+      └─ world_data = copy.deepcopy(redo_stack.pop())
+
+
+FILE BROWSER FLOW:
+
+  Press L:
+      │
+      ├─ Scan directory for level*_data files
+      ├─ Show file list
+      │
+      ├─ UP/DOWN arrows: Select file
+      ├─ ENTER: Load selected file
+      │
+      └─ ESC: Cancel, back to editing
+
+
+================================================================================
+13. DATA FLOW DIAGRAM
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    COMPLETE DATA FLOW                                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+FROM FILE TO SCREEN:
+
+  levelN_data (pickle file on disk)
+      │
+      ├─ pygame open file
+      ├─ pickle.load()
+      └─ In-memory 2D array
+          │
+          ├─ World(data)
+          │   ├─ Read tile codes
+          │   ├─ Create sprites
+          │   └─ Store in sprite groups
+          │
+          ├─ Sprite positions (world coords)
+          │   │
+          │   ├─ Camera.apply(x, y)
+          │   ├─ Convert to screen coords
+          │   │
+          │   └─ pygame.blit(image, (screen_x, screen_y))
+          │       │
+          │       └─ Rendered on screen
+
+
+PLAYER INPUT TO GAME STATE:
+
+  Keyboard input
+      │
+      ├─ pygame.key.get_pressed()
+      ├─ Calculate dx, dy
+      │
+      ├─ Player.update()
+      │   ├─ Apply velocity
+      │   ├─ Check collisions
+      │   └─ Determine game_over state
+      │
+      ├─ game_over state
+      │   ├─ 0 = playing
+      │   ├─ 1 = level complete
+      │   └─ -1 = death
+      │
+      └─ Game loop responds to game_over
+          ├─ Show appropriate screen
+          ├─ Load next level if needed
+          └─ Continue gameplay
+
+
+COLLISION RESULT TO GAME STATE:
+
+  Collision detected
+      │
+      ├─ Enemy collision → game_over = -1
+      ├─ Lava collision → game_over = -1
+      ├─ Exit collision → game_over = 1
+      ├─ Coin collision → score += 1 (no state change)
+      │
+      └─ Game responds immediately next frame
+
+
+================================================================================
+14. TIMING AND SYNCHRONIZATION
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    FRAME TIMING (60 FPS)                                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+FRAME DURATION: 16.67 milliseconds
+
+Frame #1
+├─ 0.00 ms: Input processing
+├─ 1.50 ms: Update game state
+├─ 3.50 ms: Collision detection
+├─ 10.00 ms: Rendering
+├─ 16.67 ms: Wait until this time (clock.tick(60))
+└─ 16.67 ms: START NEXT FRAME
+
+Frame #2
+├─ 33.33 ms: ...
+└─ 33.33 ms: START NEXT FRAME
+
+...
+
+MOVEMENT SPEED SYNCHRONIZATION:
+
+  Without frame-rate independence:
+    Movement = 5 pixels per frame
+    At 60 FPS = 300 pixels/sec ✓
+    At 30 FPS = 150 pixels/sec ✗ (too slow)
+  
+  Our game assumes 60 FPS, so movement
+  is tied to frame rate.
+
+  To fix: dt = clock.tick(60) / 1000
+          movement = 5 * dt * 60
+
+
+ANIMATION SYNCHRONIZATION:
+
+  Animation cooldown = 5 frames
+  At 60 FPS = 12 animation updates/sec
+  
+  Walking looks smooth at 12 fps
+  Enemy walking looks smooth at 12 fps
+
+
+PHYSICS SYNCHRONIZATION:
+
+  gravity = 1 pixel/frame²
+  At 60 FPS, continuous acceleration
+  
+  vel_y += 1 each frame
+  vel_y at frame 15 = -15 + 15 = 0 (peak of jump)
+  Total jump height = ~90 pixels
+  Very playable!
+
+
+================================================================================
+END OF DESIGN DIAGRAM & LOGIC FLOW
+================================================================================
+
+This document covers:
+✓ System architecture and class relationships
+✓ Game state machine and transitions
+✓ Collision detection algorithm
+✓ Physics simulation
+✓ Animation system
+✓ Camera system
+✓ Main game loop structure
+✓ Level loading sequence
+✓ Input handling
+✓ Error handling
+✓ Level editor architecture
+✓ Data flow from file to screen
+✓ Timing and synchronization
+
+All flows are designed for clarity, efficiency, and maintainability.
+
+================================================================================
